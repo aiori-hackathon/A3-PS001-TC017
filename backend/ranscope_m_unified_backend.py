@@ -55,7 +55,7 @@ BALANCED_LOSS = True                   # class-balanced BCE
 DROP_POST_ENCRYPTION_FEATURES = True   # hide enc_count / locked_count (already-encrypted evidence)
 USE_EAP_EXTRA_RUNS = False             # EAP-only runs have identical entropy in both classes
 TRAIN_KS = [1, 2, 3, 5, None]          # train on first-k-window prefixes (None = full run)
-RUN_UNSEEN_TEST = False                # slow (~3x training): train WITHOUT one ransomware scenario, test on it
+RUN_UNSEEN_TEST = False              # slow (~3x training): train WITHOUT one ransomware scenario, test on it
 
 def set_seed(s=SEED):
     random.seed(s); np.random.seed(s); torch.manual_seed(s); torch.cuda.manual_seed_all(s)
@@ -496,7 +496,8 @@ def wilson(k, n, z=1.96):
     return (max(c - h, 0.0), min(c + h, 1.0))
 
 def test_dataset(data, ensemble=None, save_to="/content/ranscope_m_results.xlsx",
-                 per_window=True, parallel=True, download=True, artifact=ARTIFACT):
+                 per_window=True, parallel=True, download=True, artifact=ARTIFACT,
+                 export_excel=True):
     """data = path to ONE csv (or a DataFrame) that holds all columns.
     Each pretrained layer takes only its own columns, the 4 layers run simultaneously (threads),
     each returns a score in [0,1], and the ensemble weighted-averages the scores."""
@@ -592,20 +593,41 @@ def test_dataset(data, ensemble=None, save_to="/content/ranscope_m_results.xlsx"
                                  "flag": int(ft[j] >= ens.threshold)})
         win_df = pd.DataFrame(rows); out["win_df"] = win_df
 
-    with pd.ExcelWriter(save_to, engine="openpyxl") as xw:
-        run_df.round(5).to_excel(xw, "Per_Run_Final", index=False)
-        if win_df is not None: win_df.round(5).to_excel(xw, "Per_Window", index=False)
-        if out["metrics_df"] is not None: out["metrics_df"].round(4).to_excel(xw, "Metrics")
-        if "diag_df" in out: out["diag_df"].round(4).to_excel(xw, "Layer_Diagnostics")
-        if "ablation_df" in out: out["ablation_df"].round(4).to_excel(xw, "Ensemble_Ablation")
-        pd.DataFrame([{"layer": l, "columns_used": ", ".join(sorted(set(LAYER_COLUMNS[l])))} for l in FILES]
-                     ).to_excel(xw, "Columns_Per_Layer", index=False)
-    print("\nSaved", save_to)
-    if download:
-        try:
-            from google.colab import files as _f; _f.download(save_to)
-        except Exception:
-            pass
+        if export_excel:
+          with pd.ExcelWriter(save_to, engine="openpyxl") as xw:
+            run_df.round(5).to_excel(xw, "Per_Run_Final", index=False)
+
+            if win_df is not None:
+                win_df.round(5).to_excel(xw, "Per_Window", index=False)
+
+            if out["metrics_df"] is not None:
+                out["metrics_df"].round(4).to_excel(xw, "Metrics")
+
+            if "diag_df" in out:
+                out["diag_df"].round(4).to_excel(xw, "Layer_Diagnostics")
+
+            if "ablation_df" in out:
+                out["ablation_df"].round(4).to_excel(xw, "Ensemble_Ablation")
+
+            pd.DataFrame([
+                {
+                    "layer": layer,
+                    "columns_used": ", ".join(
+                        sorted(set(LAYER_COLUMNS[layer]))
+                    ),
+                }
+                for layer in FILES
+            ]).to_excel(xw, "Columns_Per_Layer", index=False)
+
+        print("\nSaved", save_to)
+
+        if download:
+            try:
+                from google.colab import files as colab_files
+                colab_files.download(save_to)
+            except Exception:
+                pass
+
     return out
 
 # %% ------------------------------------------------------------ 6. LIVE DETECTOR
@@ -644,35 +666,117 @@ def replay_run(det, df, rid, win_s=5.0):
               + f"  | FINAL={o['p_final']:.2f} {o['verdict']}{'  <-- ALERT' if o['alert'] else ''}")
 
 # %% ------------------------------------------------------------ 6b. UNSEEN-SCENARIO TEST (optional)
+
+# %% ------------------------------------------------------------ 6b. UNSEEN-SCENARIO TEST
 def unseen_scenario_test():
-    """Train WITHOUT one ransomware scenario, test on it (+20% held-out benign runs)."""
+    """Train without one malicious scenario and test on it plus held-out benign runs."""
     LABEL, SCEN = {}, {}
+
     for layer, fname in TRAIN_FILES.items():
-        raw = pd.read_csv(os.path.join(DATA_DIR, fname)); RUNS[layer] = build_runs(raw, layer)
+        raw = pd.read_csv(os.path.join(DATA_DIR, fname))
+        RUNS[layer] = build_runs(raw, layer)
+
         g = raw.groupby("run_id")[["label", "scenario"]].first()
         for rid, row in g.iterrows():
-            LABEL[rid] = int(row["label"] == "malicious"); SCEN.setdefault(rid, row["scenario"])
-    common = sorted(set.intersection(*[set(RUNS[l]) for l in FILES]))
-    ben = [r for r in common if LABEL[r] == 0]
-    _, ben_te = train_test_split(ben, test_size=0.2, random_state=SEED, stratify=[SCEN[r] for r in ben])
-    ben_te_set = set(ben_te); rec, bok = {}, {}
-    for held in sorted({SCEN[r] for r in common if LABEL[r] == 1}):
-        held_ids = [r for r in common if SCEN[r] == held]; hs = set(held_ids)
-        pool = [r for r in common if r not in hs and r not in ben_te_set]
-        tr, va = train_test_split(pool, test_size=0.15, random_state=SEED, stratify=[SCEN[r] for r in pool])
-        te = held_ids + list(ben_te); P = {}
-        print(f"\n--- training without {held} ---")
+            LABEL[rid] = int(row["label"] == "malicious")
+            SCEN.setdefault(rid, row["scenario"])
+
+    common = sorted(set.intersection(*(set(RUNS[l]) for l in FILES)))
+    benign = [r for r in common if LABEL[r] == 0]
+    malicious = [r for r in common if LABEL[r] == 1]
+
+    if not benign or not malicious:
+        raise ValueError("Need both benign and malicious runs for this evaluation.")
+
+    # Hold out benign runs, stratifying only when every group supports it.
+    benign_scenarios = [SCEN[r] for r in benign]
+    counts = Counter(benign_scenarios)
+    can_stratify = len(counts) > 1 and min(counts.values()) >= 2
+
+    _, benign_test = train_test_split(
+        benign,
+        test_size=0.2,
+        random_state=SEED,
+        stratify=benign_scenarios if can_stratify else None,
+    )
+    benign_test_set = set(benign_test)
+
+    recalls, benign_correct = {}, {}
+
+    for held in sorted({SCEN[r] for r in malicious}):
+        held_ids = [r for r in malicious if SCEN[r] == held]
+        held_set = set(held_ids)
+
+        # Explicitly exclude the held scenario and held-out benign runs.
+        pool = [
+            r for r in common
+            if r not in held_set and r not in benign_test_set
+        ]
+
+        if not any(LABEL[r] == 1 for r in pool):
+            print(f"Skipping {held}: no malicious runs remain for training.")
+            continue
+
+        pool_scenarios = [SCEN[r] for r in pool]
+        pool_counts = Counter(pool_scenarios)
+        stratify_pool = (
+            pool_scenarios
+            if len(pool_counts) > 1 and min(pool_counts.values()) >= 2
+            else None
+        )
+
+        tr, va = train_test_split(
+            pool,
+            test_size=0.15,
+            random_state=SEED,
+            stratify=stratify_pool,
+        )
+
+        # Safety assertions: no held malicious scenario in train or validation.
+        assert not (set(tr) & held_set)
+        assert not (set(va) & held_set)
+
+        test_ids = held_ids + list(benign_test)
+        predictions = {}
+
+        print(
+            f"\n--- held-out scenario: {held} | "
+            f"train={len(tr)} validation={len(va)} "
+            f"test={len(test_ids)} ---"
+        )
+
         for layer in FILES:
-            set_seed(SEED); sp = SPECS[layer](); sp.fit_scaler(tr)
-            m = fit(sp, tr, va, TRAIN_KS, LABEL); P[layer] = predict(m, sp.inputs(te))
-        P["ENSEMBLE"] = ENSEMBLE.fuse({l: P[l] for l in FILES})
-        is_h = np.array([r in hs for r in te])
-        rec[held] = {l: float((p[is_h] >= ENSEMBLE.threshold).mean()) for l, p in P.items()}
-        bok[held] = {l: float((p[~is_h] < ENSEMBLE.threshold).mean()) for l, p in P.items()}
-    print("\n" + "=" * 78 + "\nUNSEEN-SCENARIO TEST - recall on the ransomware scenario NOT used in training\n" + "=" * 78)
-    print(pd.DataFrame(rec).T.round(3).to_string())
-    print("\nBenign runs classified correctly in the same experiment:\n", pd.DataFrame(bok).T.round(3).to_string())
-    return pd.DataFrame(rec).T, pd.DataFrame(bok).T
+            set_seed(SEED)
+            spec = SPECS[layer]()
+            spec.fit_scaler(tr)
+            model = fit(spec, tr, va, TRAIN_KS, LABEL)
+            predictions[layer] = predict(model, spec.inputs(test_ids))
+
+        predictions["ENSEMBLE"] = ENSEMBLE.fuse(
+            {layer: predictions[layer] for layer in FILES}
+        )
+
+        is_held = np.array([rid in held_set for rid in test_ids])
+
+        recalls[held] = {
+            layer: float((prob[is_held] >= ENSEMBLE.threshold).mean())
+            for layer, prob in predictions.items()
+        }
+        benign_correct[held] = {
+            layer: float((prob[~is_held] < ENSEMBLE.threshold).mean())
+            for layer, prob in predictions.items()
+        }
+
+    recall_df = pd.DataFrame(recalls).T
+    benign_df = pd.DataFrame(benign_correct).T
+
+    print("\nUNSEEN-SCENARIO RECALL")
+    print(recall_df.round(3).to_string())
+    print("\nBENIGN RUNS CLASSIFIED CORRECTLY")
+    print(benign_df.round(3).to_string())
+
+    return recall_df, benign_df
+
 
 # %% ------------------------------------------------------------ 7. RUN
 print_model_summary()

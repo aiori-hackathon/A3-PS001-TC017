@@ -1,6 +1,6 @@
 
-const API_BASE_URL = "http://127.0.0.1:8000";
-const WS_URL = "ws://127.0.0.1:8000/ws/live";
+const API_BASE_URL = "https://ranscope-backend-staging.onrender.com";
+const WS_URL = "wss://ranscope-backend-staging.onrender.com/ws/live";
 
 export interface BackendStatus {
   backend: string;
@@ -42,21 +42,32 @@ export interface DetectionData {
   alert?: boolean;
   window?: number;
   inference_status: string;
+  active_models?: string[];
+  inactive_models?: string[];
 }
 
 export interface TelemetryEvent {
-  event: "telemetry_update" | "connection" | "detection_update";
+  event: "telemetry_update" | "connection" | "detection_update" | "android_window_update";
   telemetry?: TelemetryData | null;
+  android_window?: TelemetryData | null;
   detection?: DetectionData | null;
   message?: string;
 }
 
 export interface LatestTelemetryResponse {
   telemetry: TelemetryData | null;
+  android_window?: TelemetryData | null;
 }
 
 export interface LatestDetectionResponse {
   detection: DetectionData | null;
+}
+
+export interface DetectionHistoryResponse {
+  records: DetectionData[];
+  count: number;
+  storage: string;
+  notice: string;
 }
 
 export interface DetectionResponse {
@@ -95,6 +106,14 @@ export function getLatestTelemetry(): Promise<LatestTelemetryResponse> {
 
 export function getLatestDetection(): Promise<LatestDetectionResponse> {
   return fetchJSON<LatestDetectionResponse>("/api/detections/latest");
+}
+
+export function getDetectionHistory(
+  limit = 100,
+): Promise<DetectionHistoryResponse> {
+  return fetchJSON<DetectionHistoryResponse>(
+    `/api/detections/history?limit=${limit}`,
+  );
 }
 
 export function connectLiveUpdates(
