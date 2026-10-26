@@ -1,3 +1,4 @@
+from fastapi.encoders import jsonable_encoder
 import math
 
 from datetime import datetime, timezone
@@ -860,14 +861,26 @@ async def get_latest_detection():
 
 @app.get("/api/detections/history")
 async def get_detection_history(limit: int = 100):
-    """Return recent real inference results, newest first (in-memory only)."""
+    """Return recent inference results in JSON-safe form."""
     if limit < 1 or limit > MAX_DETECTION_HISTORY:
         raise HTTPException(
             status_code=422,
             detail=f"limit must be between 1 and {MAX_DETECTION_HISTORY}.",
         )
+
+    records = list(reversed(detection_history[-limit:]))
+    safe_records = []
+    for record in records:
+        try:
+            safe_records.append(jsonable_encoder(record))
+        except Exception:
+            safe_records.append({
+                "error": "History record serialization failed",
+                "record_type": type(record).__name__,
+            })
+
     return {
-        "records": list(reversed(detection_history[-limit:])),
+        "records": safe_records,
         "count": len(detection_history),
         "storage": "in_memory",
         "notice": "History is cleared when the backend process restarts.",
