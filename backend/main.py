@@ -861,26 +861,34 @@ async def get_latest_detection():
 
 @app.get("/api/detections/history")
 async def get_detection_history(limit: int = 100):
-    """Return recent inference results in JSON-safe form."""
+    """Return recent inference results with JSON-safe numeric values."""
     if limit < 1 or limit > MAX_DETECTION_HISTORY:
         raise HTTPException(
             status_code=422,
             detail=f"limit must be between 1 and {MAX_DETECTION_HISTORY}.",
         )
 
+    def make_json_safe(value):
+        if isinstance(value, dict):
+            return {str(k): make_json_safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [make_json_safe(v) for v in value]
+        if isinstance(value, float):
+            return value if math.isfinite(value) else None
+
+        # Handle NumPy scalar values, if present.
+        if hasattr(value, "item") and callable(value.item):
+            try:
+                return make_json_safe(value.item())
+            except (ValueError, TypeError):
+                pass
+
+        return value
+
     records = list(reversed(detection_history[-limit:]))
-    safe_records = []
-    for record in records:
-        try:
-            safe_records.append(jsonable_encoder(record))
-        except Exception:
-            safe_records.append({
-                "error": "History record serialization failed",
-                "record_type": type(record).__name__,
-            })
 
     return {
-        "records": safe_records,
+        "records": [make_json_safe(record) for record in records],
         "count": len(detection_history),
         "storage": "in_memory",
         "notice": "History is cleared when the backend process restarts.",
