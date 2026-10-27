@@ -671,18 +671,15 @@ async def analyze_uploaded_csv(file: UploadFile = File(...)):
     if df.empty:
         raise HTTPException(status_code=400, detail="The CSV has no data rows.")
 
-    required_columns = (
-        ["run_id", "window_start_ms", "window_end_ms"]
-        + required_feature_columns()
-    )
-
+        # Only metadata is universally required.
+    required_columns = ["run_id", "window_start_ms", "window_end_ms"]
     missing = [col for col in required_columns if col not in df.columns]
 
     if missing:
         raise HTTPException(
             status_code=422,
             detail={
-                "message": "CSV is missing required columns.",
+                "message": "CSV is missing required metadata columns.",
                 "missing_columns": missing,
             },
         )
@@ -693,6 +690,46 @@ async def analyze_uploaded_csv(file: UploadFile = File(...)):
             detail="CSV exceeds the 10,000-row limit."
         )
 
+    # Determine which pretrained layers have their complete feature schema.
+    meta_columns = ["run_id", "window_start_ms", "window_end_ms"]
+    active_layers = []
+    skipped_layers = {}
+
+    for layer in model_pipeline.FILES:
+        layer_required = list(dict.fromkeys(
+            meta_columns + model_pipeline.LAYER_COLUMNS[layer]
+        ))
+        layer_missing = [
+            col for col in layer_required if col not in df.columns
+        ]
+
+        if layer_missing:
+            skipped_layers[layer] = layer_missing
+        else:
+            active_layers.append(layer)
+
+    if not active_layers:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": (
+                    "CSV does not contain the complete feature columns "
+                    "required by any pretrained model layer."
+                ),
+                "skipped_layers": skipped_layers,
+            },
+        )
+
+    # Validate numeric values only for layers that will actually run.
+    numeric_columns = list(dict.fromkeys(
+        ["window_start_ms", "window_end_ms"]
+        + [
+            col
+            for layer in active_layers
+            for col in model_pipeline.LAYER_COLUMNS[layer]
+        ]
+    ))
+
     if df["run_id"].isna().any():
         raise HTTPException(
             status_code=422,
@@ -700,11 +737,6 @@ async def analyze_uploaded_csv(file: UploadFile = File(...)):
         )
 
     df["run_id"] = df["run_id"].astype(str)
-
-    numeric_columns = (
-        ["window_start_ms", "window_end_ms"]
-        + required_feature_columns()
-    )
 
     for col in numeric_columns:
         df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -780,6 +812,8 @@ async def analyze_uploaded_csv(file: UploadFile = File(...)):
                     parallel=False,
                     download=False,
                     export_excel=False,
+                    pretrained_specs=detector.specs,
+                    pretrained_models=detector.models,
 
                 )
 
@@ -817,6 +851,8 @@ async def analyze_uploaded_csv(file: UploadFile = File(...)):
         "has_labels": bool(has_labels),
         "threshold": DETECTION_THRESHOLD,
         "model_weights": MODEL_WEIGHTS,
+        "active_layers": active_layers,
+        "skipped_layers": skipped_layers,
         "summary": {
             "malicious_runs": int(
                 (run_df["verdict"] == "MALICIOUS").sum()

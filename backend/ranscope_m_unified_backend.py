@@ -495,16 +495,36 @@ def wilson(k, n, z=1.96):
     c = (p + z * z / (2 * n)) / d; h = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
     return (max(c - h, 0.0), min(c + h, 1.0))
 
-def test_dataset(data, ensemble=None, save_to="/content/ranscope_m_results.xlsx",
-                 per_window=True, parallel=True, download=True, artifact=ARTIFACT,
-                 export_excel=True):
+def test_dataset(
+    data,
+    ensemble=None,
+    save_to="/content/ranscope_m_results.xlsx",
+    per_window=True,
+    parallel=True,
+    download=True,
+    artifact=ARTIFACT,
+    export_excel=True,
+    pretrained_specs=None,
+    pretrained_models=None,
+):
     """data = path to ONE csv (or a DataFrame) that holds all columns.
     Each pretrained layer takes only its own columns, the 4 layers run simultaneously (threads),
     each returns a score in [0,1], and the ensemble weighted-averages the scores."""
     ens = ensemble or ENSEMBLE
-    specs, models = load_pretrained(artifact)
-    df = (pd.read_csv(data) if isinstance(data, (str, os.PathLike)) else data.copy())
-    df = df.sort_values(["run_id", "window_start_ms"]).reset_index(drop=True)
+
+    if pretrained_specs is not None and pretrained_models is not None:
+        specs, models = pretrained_specs, pretrained_models
+    else:
+        specs, models = load_pretrained(artifact)
+
+    df = (
+        pd.read_csv(data)
+        if isinstance(data, (str, os.PathLike))
+        else data.copy()
+    )
+    df = df.sort_values(
+        ["run_id", "window_start_ms"]
+    ).reset_index(drop=True)
 
     active, skipped = [], {}
     for l in FILES:                                            # can this layer run on this dataset?
