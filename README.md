@@ -1,8 +1,11 @@
-# A3-PS001-TC017
+# A3-PS001-TC017 — Android Ransomware-like Activity Early-Warning in a Controlled Lab
 
-**PS001: Android Ransomware-like Activity Early-Warning in a Controlled Lab**
+## [Prototype Demonstration Video Link](https://youtu.be/QgVFKGefOUc?si=V36lDIdPoOuNaHjM)
 
-RANSCOPE is a research project for monitoring Android application behaviour and analysing telemetry for potential ransomware activity. The project combines Android-side monitoring, a Python backend, pretrained detection models, and a live web dashboard.
+## [Live Prototype Link](http://202.54.170.198:8000)
+
+
+## RANSCOPE is a research project for monitoring Android application behaviour and analysing telemetry for potential ransomware activity. The project combines Android-side monitoring, a Python backend, pretrained detection models, and a live web dashboard.
 
 YouTube Link: https://youtu.be/fLifYiGd4dQ?si=Y_Wn5dAMMvJEcAs-
 
